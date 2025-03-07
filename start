@@ -1,0 +1,2 @@
+cd translator-app && ./start-backend.sh
+cd translator-app && ./start-frontend.sh
