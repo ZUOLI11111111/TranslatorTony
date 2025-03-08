@@ -3,8 +3,7 @@ from flask_cors import CORS
 import requests
 import config
 import os
-import json
-import time
+
 from dotenv import load_dotenv
 
 app = Flask(__name__)
@@ -21,16 +20,16 @@ if os.path.exists(dotenv_path):
 else:
     print("警告: 未找到.env文件")
 
-# 配置DeepSeek API密钥
-DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
-DEEPSEEK_API_URL = os.getenv('DEEPSEEK_API_URL', 'https://api.deepseek.com')
-DEEPSEEK_MODEL = os.getenv('DEEPSEEK_MODEL', 'deepseek-chat')
+# 配置llm API密钥
+API_KEY = os.getenv('CHATGLM_API_KEY')
+API_URL = os.getenv('CHATGLM_API_URL')
+MODEL = os.getenv('CHATGLM_MODEL')
 
 
-print(f"API配置状态: {'已配置' if DEEPSEEK_API_KEY else '未配置'}")
-print(f"使用模型:  DEEPSEEK_MODEL")
-print(f"API基础URL: {DEEPSEEK_API_URL}")
-print(f"完整API路径: {DEEPSEEK_API_URL}/v1/chat/completions")
+print(f"API配置状态: {'已配置' if API_KEY else '未配置'}")
+print(f"使用模型:  MODEL")
+print(f"API基础URL: {API_URL}")
+print(f"完整API路径: {API_URL}")
 
 @app.route('/')
 def index():
@@ -38,7 +37,7 @@ def index():
     return jsonify({
         "status": "ok",
         "message": "翻译API服务正在运行",
-        "model": DEEPSEEK_MODEL,
+        "model": MODEL,
         "endpoints": [
             "/api/translate - 翻译API",
             "/api/languages - 获取支持的语言",
@@ -49,20 +48,20 @@ def index():
     })
 
 
-def call_deepseek_api(messages, model="deepseek-chat"):
-    """调用DeepSeek API，包含错误处理"""
+def call_llm_api(messages, model):
+    """调用llm API，包含错误处理"""
     try:
-        print(f"调用DeepSeek API，模型: {model}")
-        print(f"API基础URL: {DEEPSEEK_API_URL}")
-        print(f"请求URL: {DEEPSEEK_API_URL}/v1/chat/completions")
+        print(f"调用llm API，模型: {model}")
+        print(f"API基础URL: {API_URL}")
+        print(f"请求URL: {API_URL}")
                 
         # 检查API密钥
-        if not DEEPSEEK_API_KEY:
-            raise ValueError("未配置DeepSeek API密钥")
+        if not API_KEY:
+            raise ValueError("未配置API密钥")
         
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
+            "Authorization": f"Bearer {API_KEY}"
         }
         
         payload = {
@@ -72,12 +71,12 @@ def call_deepseek_api(messages, model="deepseek-chat"):
             "max_tokens": 8192
         }
         
-        print(f"发送请求到DeepSeek API，模型: {model}")
+        print(f"发送请求到llm API，模型: {model}")
         response = requests.post(
-            f"{DEEPSEEK_API_URL}/v1/chat/completions",
+            f"{API_URL}",
             headers=headers,
             json=payload,
-            timeout=300  # 增加超时时间到5分钟
+            timeout=300  
         )
         
         # 检查请求是否成功
@@ -94,7 +93,7 @@ def call_deepseek_api(messages, model="deepseek-chat"):
         if hasattr(e, 'response') and e.response is not None:
             status_code = e.response.status_code
             if status_code == 404:
-                raise ValueError(f"API端点未找到(404)。请检查API URL是否正确: {DEEPSEEK_API_URL}/v1/chat/completions")
+                raise ValueError(f"API端点未找到(404)。请检查API URL是否正确: {API_URL}")
             elif status_code == 401:
                 raise ValueError("API密钥无效或已过期(401)")
             else:
@@ -132,7 +131,7 @@ def translate():
     }
     """
     print("收到翻译请求")
-    if not DEEPSEEK_API_KEY:
+    if not API_KEY:
         return jsonify({"error": "未配置API密钥"}), 500
         
     try:
@@ -159,37 +158,38 @@ def translate():
         
         
         
-        # 调用DeepSeek API
+        # 调用LLM API
         messages = [
             {"role": "system", "content": "你是一个专业翻译助手，能够准确流畅地进行多语言翻译。"},
             {"role": "user", "content": prompt}
         ]
         
-        model = os.getenv('DEEPSEEK_MODEL', 'deepseek-chat')
-        response = call_deepseek_api(messages, model)
+        model = os.getenv('CHATGLM_MODEL')
+        print(f"使用模型: {model}")
+        response = call_llm_api(messages, model)
         
         # 从响应中提取翻译文本
         translated_text = response['choices'][0]['message']['content'].strip()
         print(f"翻译结果: {translated_text[:50]}...")
         
-        # 保存翻译记录到Java后端数据库
+        # 尝试保存翻译记录，但不影响翻译结果返回
         try:
-            storage_success = save_to_database(text, translated_text, source_lang, target_lang, request.remote_addr)
-            if storage_success:
-                print("数据存储成功")
+            ip_address = request.remote_addr
+            save_result = save_to_database(text, translated_text, source_lang, target_lang, ip_address)
+            if save_result:
+                print("翻译记录已成功保存到数据库")
             else:
-                print("数据存储失败，但不影响翻译功能")
+                print("保存到数据库失败，但继续返回翻译结果")
         except Exception as e:
-            print(f"保存到数据库失败: {str(e)}")
-            # 继续处理，不影响翻译结果返回
+            print(f"保存到数据库过程中出错: {str(e)}")
         
+        # 无论数据库保存成功与否，都返回翻译结果
         return jsonify({
             "original_text": text,
             "translated_text": translated_text,
             "source_lang": source_lang,
             "target_lang": target_lang,
-            "mode": "api",
-            "stored": storage_success if 'storage_success' in locals() else False
+            "mode": "api"
         })
         
     except Exception as e:
@@ -220,11 +220,11 @@ def check_api():
     """检查API密钥是否已配置"""
     print("检查API配置")
     
-    if DEEPSEEK_API_KEY:
+    if API_KEY:
         return jsonify({
             "status": "ok", 
             "message": "API密钥已配置", 
-            "model": DEEPSEEK_MODEL,
+            "model": MODEL,
             "offline_mode": False
         })
     else:
@@ -234,7 +234,7 @@ def check_api():
 def configure_api():
     """配置API密钥和模型"""
     # 声明全局变量 - 必须在函数开始处声明
-    global DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_API_URL, OFFLINE_MODE
+    global API_KEY, MODEL, API_URL
     
     print("收到API配置请求")
     try:
@@ -247,8 +247,7 @@ def configure_api():
         
         # 正常API模式，需要API密钥
         api_key = data.get('api_key')
-        model = data.get('model', 'deepseek-chat')
-        api_url = data.get('api_url', 'https://api.deepseek.com')
+        
         
         if not api_key:
             return jsonify({"error": "API密钥不能为空"}), 400
@@ -263,12 +262,14 @@ def health_check():
     return jsonify({
         "status": "ok", 
         "message": "服务正常运行", 
-        "model": DEEPSEEK_MODEL,
+        "model": MODEL,
     })
 
 def save_to_database(original_text, translated_text, source_lang, target_lang, ip_address):
     """保存翻译记录到Java后端数据库"""
     java_backend_url = os.getenv('JAVA_BACKEND_URL', 'http://localhost:8080/api/translations')
+    
+    print(f"尝试保存翻译记录到Java后端，URL: {java_backend_url}")
     
     try:
         data = {
@@ -277,8 +278,10 @@ def save_to_database(original_text, translated_text, source_lang, target_lang, i
             "sourceLang": source_lang,
             "targetLang": target_lang,
             "ipAddress": ip_address,
-            "model": DEEPSEEK_MODEL
+            "model": MODEL
         }
+        
+        print(f"发送数据: {data}")
         
         # 发送POST请求到Java后端
         response = requests.post(
@@ -288,8 +291,11 @@ def save_to_database(original_text, translated_text, source_lang, target_lang, i
             timeout=5  # 5秒超时
         )
         
+        print(f"Java后端响应状态码: {response.status_code}")
+        print(f"Java后端响应内容: {response.text[:100]}")  # 只显示前100个字符，避免日志过长
+        
         if response.status_code == 201:
-            print("翻译记录已保存到数据库")
+            print("翻译记录已成功保存到数据库")
             return True
         else:
             print(f"保存到数据库失败: HTTP {response.status_code}")

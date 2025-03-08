@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import Translator from './components/Translator';
 import ApiKeyForm from './components/ApiKeyForm';
+import TranslationHistory from './components/TranslationHistory';
+import './styles/App.css';
 
 // 配置axios的默认URL和超时 - 指定完整的协议和端口
 const API_BASE_URL = window.location.hostname === 'localhost' 
@@ -9,7 +11,7 @@ const API_BASE_URL = window.location.hostname === 'localhost'
   : `http://${window.location.hostname}:5000`;
 
 // 不设置默认baseURL，在每个请求中明确指定完整URL
-axios.defaults.timeout = 120000; // 设置全局超时为120秒，与后端保持一致
+axios.defaults.timeout = 300000; // 设置全局超时为300秒（5分钟），与后端保持一致
 
 // 添加调试信息
 console.log(`应用启动，API地址: ${API_BASE_URL}`);
@@ -21,6 +23,7 @@ function App() {
   const [error, setError] = useState(null);
   const [languages, setLanguages] = useState({});
   const [backendStatus, setBackendStatus] = useState('检查中...');
+  const [activeView, setActiveView] = useState('translator'); // 'translator' 或 'history'
 
   useEffect(() => {
     // 首先检查后端服务是否可用
@@ -115,11 +118,38 @@ function App() {
     checkApiConfiguration(); // 重新验证
   };
 
+  // 切换到翻译视图
+  const showTranslator = () => {
+    setActiveView('translator');
+  };
+
+  // 切换到历史记录视图
+  const showHistory = () => {
+    setActiveView('history');
+  };
+
   return (
     <div className="app-container">
       <header className="header">
         <h1>智能翻译助手</h1>
         <p>基于LLM API的本地翻译工具</p>
+        
+        {isApiConfigured && (
+          <div className="nav-buttons">
+            <button 
+              className={activeView === 'translator' ? 'active' : ''} 
+              onClick={showTranslator}
+            >
+              翻译
+            </button>
+            <button 
+              className={activeView === 'history' ? 'active' : ''} 
+              onClick={showHistory}
+            >
+              历史记录
+            </button>
+          </div>
+        )}
       </header>
 
       {backendStatus !== '后端连接成功' && backendStatus !== '后端连接成功(语言列表)' && (
@@ -139,7 +169,11 @@ function App() {
           {error}
         </div>
       ) : isApiConfigured ? (
-        <Translator languages={languages} apiBaseUrl={API_BASE_URL} />
+        activeView === 'translator' ? (
+          <Translator languages={languages} apiBaseUrl={API_BASE_URL} onViewHistory={showHistory} />
+        ) : (
+          <TranslationHistory onBack={showTranslator} />
+        )
       ) : (
         <ApiKeyForm onApiConfigured={handleApiConfigured} apiBaseUrl={API_BASE_URL} />
       )}

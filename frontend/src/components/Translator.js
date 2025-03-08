@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 
-function Translator({ languages, apiBaseUrl }) {
+function Translator({ languages, apiBaseUrl, onViewHistory }) {
   const [sourceLang, setSourceLang] = useState('auto');
   const [targetLang, setTargetLang] = useState('en');
   const [sourceText, setSourceText] = useState('');
@@ -29,7 +29,7 @@ function Translator({ languages, apiBaseUrl }) {
         source_lang: sourceLang,
         target_lang: targetLang
       }, {
-        timeout: 120000 // 120秒超时，与后端一致
+        timeout: 300000 // 300秒（5分钟）超时，与后端一致
       });
 
       console.log('翻译完成');
@@ -51,7 +51,7 @@ function Translator({ languages, apiBaseUrl }) {
         setError(
           <div>
             <p>服务器无响应或请求超时</p>
-            <p style={{marginTop: '0.5rem'}}>当前超时设置：120秒</p>
+            <p style={{marginTop: '0.5rem'}}>当前超时设置：300秒</p>
           </div>
         );
       } else {
@@ -89,6 +89,13 @@ function Translator({ languages, apiBaseUrl }) {
   const handleKeyDown = (e) => {
     if (e.ctrlKey && e.key === 'Enter') {
       handleTranslate();
+    }
+  };
+
+  // 查看翻译历史记录
+  const handleViewHistory = () => {
+    if (typeof onViewHistory === 'function') {
+      onViewHistory();
     }
   };
 
@@ -149,7 +156,11 @@ function Translator({ languages, apiBaseUrl }) {
             value={translatedText}
             readOnly
             placeholder="翻译结果将显示在这里"
+            style={{minHeight: '200px'}}
           />
+          <div className="text-counter" style={{textAlign: 'right', fontSize: '0.8rem', color: '#666'}}>
+            {translatedText.length} 字符
+          </div>
         </div>
       </div>
       
@@ -168,6 +179,9 @@ function Translator({ languages, apiBaseUrl }) {
         </button>
         <button className="clear-button" onClick={handleClear}>
           清空
+        </button>
+        <button className="history-button" onClick={handleViewHistory}>
+          查看历史记录
         </button>
       </div>
       
