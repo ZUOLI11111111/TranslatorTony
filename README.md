@@ -32,7 +32,7 @@ translator-app/
 ### 1. 克隆项目
 
 ```bash
-git clone <项目仓库URL>
+git clone https://github.com/ZUOLI11111111/TranslatorTony.git
 cd translator-app
 ```
 
