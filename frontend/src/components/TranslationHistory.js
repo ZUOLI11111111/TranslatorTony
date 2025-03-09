@@ -15,6 +15,9 @@ function TranslationHistory({ onBack }) {
   const [totalPages, setTotalPages] = useState(0);
   const [searchText, setSearchText] = useState('');
   const [stats, setStats] = useState({ total: 0, today: 0 });
+  // 添加模态对话框状态
+  const [modalVisible, setModalVisible] = useState(false);
+  const [modalContent, setModalContent] = useState({ originalText: '', translatedText: '', sourceLang: '', targetLang: '' });
 
   // 每页显示的记录数
   const pageSize = 10;
@@ -108,8 +111,48 @@ function TranslationHistory({ onBack }) {
     }
   };
 
+  // 显示完整翻译内容
+  const showFullTranslation = (translation) => {
+    setModalContent({
+      originalText: translation.originalText,
+      translatedText: translation.translatedText,
+      sourceLang: translation.sourceLang,
+      targetLang: translation.targetLang
+    });
+    setModalVisible(true);
+  };
+
+  // 关闭模态对话框
+  const closeModal = () => {
+    setModalVisible(false);
+  };
+
   return (
     <div className="translation-history">
+      {/* 模态对话框 */}
+      {modalVisible && (
+        <div className="modal-overlay" onClick={closeModal}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>完整翻译内容</h3>
+              <button className="close-button" onClick={closeModal}>&times;</button>
+            </div>
+            <div className="modal-body">
+              <div className="translation-details">
+                <div className="translation-section">
+                  <h4>原文 ({modalContent.sourceLang}):</h4>
+                  <div className="full-text">{modalContent.originalText}</div>
+                </div>
+                <div className="translation-section">
+                  <h4>译文 ({modalContent.targetLang}):</h4>
+                  <div className="full-text">{modalContent.translatedText}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="history-header">
         <h2>翻译历史记录</h2>
         <button className="back-button" onClick={handleBack}>返回翻译</button>
@@ -165,12 +208,20 @@ function TranslationHistory({ onBack }) {
                     <td>{`${translation.sourceLang} → ${translation.targetLang}`}</td>
                     <td>{formatDate(translation.createdAt)}</td>
                     <td>
-                      <button 
-                        className="delete-button"
-                        onClick={() => deleteTranslation(translation.id)}
-                      >
-                        删除
-                      </button>
+                      <div className="action-buttons">
+                        <button 
+                          className="view-button"
+                          onClick={() => showFullTranslation(translation)}
+                        >
+                          查看完整
+                        </button>
+                        <button 
+                          className="delete-button"
+                          onClick={() => deleteTranslation(translation.id)}
+                        >
+                          删除
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

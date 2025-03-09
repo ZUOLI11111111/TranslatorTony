@@ -1,10 +1,12 @@
+import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import config
 import os
-
+import threading
 from dotenv import load_dotenv
+import time
 
 app = Flask(__name__)
 # 配置JSON响应不转义中文字符
@@ -269,7 +271,13 @@ def save_to_database(original_text, translated_text, source_lang, target_lang, i
     """保存翻译记录到Java后端数据库"""
     java_backend_url = os.getenv('JAVA_BACKEND_URL', 'http://localhost:8080/api/translations')
     
-    print(f"尝试保存翻译记录到Java后端，URL: {java_backend_url}")
+    print(f"开始保存翻译记录到Java后端...")
+    print(f"Java后端URL: {java_backend_url}")
+    print(f"IP地址: {ip_address}")
+    
+    if not translated_text or len(translated_text.strip()) == 0:
+        print("❌ 译文为空，拒绝保存到数据库")
+        return False
     
     try:
         data = {
@@ -281,31 +289,227 @@ def save_to_database(original_text, translated_text, source_lang, target_lang, i
             "model": MODEL
         }
         
-        print(f"发送数据: {data}")
+        print(f"准备发送数据到Java后端，数据大小: {len(str(data))} 字节")
         
         # 发送POST请求到Java后端
         response = requests.post(
             java_backend_url,
             headers={"Content-Type": "application/json"},
             json=data,
-            timeout=5  # 5秒超时
+            timeout=10  # 增加超时时间到10秒
         )
         
         print(f"Java后端响应状态码: {response.status_code}")
-        print(f"Java后端响应内容: {response.text[:100]}")  # 只显示前100个字符，避免日志过长
+        response_text = response.text[:200] + "..." if len(response.text) > 200 else response.text
+        print(f"Java后端响应内容: {response_text}")  
         
         if response.status_code == 201:
-            print("翻译记录已成功保存到数据库")
+            print("✅ 翻译记录已成功保存到数据库")
             return True
         else:
-            print(f"保存到数据库失败: HTTP {response.status_code}")
-            print(response.text)
+            print(f"❌ 保存到数据库失败: HTTP {response.status_code}")
+            print(f"错误详情: {response.text}")
+            # 尝试保存到本地文件作为备份
+            save_to_backup_file(data)
             return False
     
-    except Exception as e:
-        print(f"连接Java后端失败: {str(e)}")
-        # 这里我们只记录错误，不阻止主要功能
+    except requests.exceptions.ConnectionError as e:
+        print(f"❌ 连接Java后端失败 (连接错误): {str(e)}")
+        print("请确保Java后端服务正在运行，可以使用 ./start-java-backend.sh 启动")
+        # 保存到本地文件作为备份
+        save_to_backup_file(data)
         return False
+    except requests.exceptions.Timeout as e:
+        print(f"❌ 连接Java后端超时: {str(e)}")
+        print("Java后端响应时间过长，可能服务器负载过高")
+        # 保存到本地文件作为备份
+        save_to_backup_file(data)
+        return False
+    except Exception as e:
+        print(f"❌ 保存到数据库时发生未知错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        # 保存到本地文件作为备份
+        save_to_backup_file(data)
+        return False
+
+def save_to_backup_file(data):
+    """当数据库保存失败时，将翻译记录保存到本地文件作为备份"""
+    try:
+        # 确保备份目录存在
+        backup_dir = os.path.join(os.path.dirname(__file__), 'translation_backups')
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        # 创建带时间戳的文件名
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"translation_{timestamp}_{os.urandom(4).hex()}.json"
+        filepath = os.path.join(backup_dir, filename)
+        
+        # 写入数据
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            
+        print(f"✅ 翻译记录已备份到本地文件: {filepath}")
+        return True
+    except Exception as e:
+        print(f"❌ 备份到本地文件时出错: {str(e)}")
+        return False
+
+def call_llm_api_streaming(messages, model):
+    """调用llm API，包含错误处理"""
+    try:
+        print(f"调用llm API，模型: {model}")
+        print(f"API基础URL: {API_URL}")
+        print(f"请求URL: {API_URL}")
+        
+        # 检查API密钥
+        if not API_KEY:
+            raise ValueError("未配置API密钥")
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}"
+        }
+        
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.3,
+            "max_tokens": 8192,
+            "stream": True
+        }
+        
+        print(f"发送请求到llm API，模型: {model}")      
+        response = requests.post(
+            f"{API_URL}",
+            headers=headers,
+            json=payload,
+            timeout=300,
+            stream=True
+        )
+        response.raise_for_status()
+        return response
+        
+    except Exception as e:
+        print(f"流式API请求错误: {str(e)}")
+        raise
+
+@app.route('/api/translate/stream', methods=['POST'])
+def translate_stream():
+    """
+    流式翻译API端点
+    请求JSON格式:
+    {
+        "text": "要翻译的文本",
+        "source_lang": "源语言代码(可选)",
+        "target_lang": "目标语言代码"
+    }
+    """
+    print("收到流式翻译请求")
+    if not API_KEY:
+        return jsonify({"error": "未配置API密钥"}), 500
+    try:
+        data = request.json
+        print(f"流式翻译请求数据: {data}")
+
+        if not data:
+            return jsonify({"error": "未收到有效的JSON数据"}), 400
+            
+        text = data.get('text', '')
+        source_lang = data.get('source_lang', config.DEFAULT_SOURCE_LANG)
+        target_lang = data.get('target_lang', config.DEFAULT_TARGET_LANG)
+        
+        # 重要：在请求上下文中获取IP地址，以便稍后在线程中使用
+        client_ip = request.remote_addr
+        
+        if not text:
+            return jsonify({"error": "文本不能为空"}), 400
+            
+        # 准备翻译提示
+        if source_lang == 'auto':
+            prompt = f"将以下文本翻译成{target_lang}语言:\n\n{text}"
+        else:
+            prompt = f"将以下{source_lang}机器味道不浓准确无误遇到人名或该语言固有名词也翻译成{target_lang}语言:\n\n{text}"
+        
+        messages = [
+            {"role": "system", "content": "你是一个专业翻译助手，能够准确流畅地进行多语言翻译。"},
+            {"role": "user", "content": prompt}
+        ]
+        
+        model = os.getenv('CHATGLM_MODEL')
+        print(f"使用模型: {model}")
+        
+        def buffered_streaming_generator():
+            """带缓冲的流式生成器，捕获翻译结果并在翻译完成后一次性保存到数据库"""
+            final_translation = ""
+            
+            # 调用原生的生成器函数
+            api_response = call_llm_api_streaming(messages, model)
+            
+            # 首先发送一个初始化事件，让前端知道连接已建立
+            yield f"data: {json.dumps({'type': 'start', 'source_lang': source_lang, 'target_lang': target_lang})}\n\n"
+            
+            # 逐行处理API返回的数据
+            for line in api_response.iter_lines():
+                if line:
+                    line = line.decode('utf-8')
+                    if line.startswith('data: '):
+                        data_str = line[6:]
+                        if data_str != '[DONE]':
+                            try:
+                                data_json = json.loads(data_str)
+                                if 'choices' in data_json:
+                                    delta = data_json['choices'][0].get('delta', {})
+                                    if 'content' in delta:
+                                        content = delta['content']
+                                        final_translation += content
+                                        response_data = {
+                                            'type': 'update',
+                                            'delta': content,
+                                            'text': final_translation
+                                        }
+                                        yield f"data: {json.dumps(response_data)}\n\n"
+                            except json.JSONDecodeError:
+                                print(f"无法解析JSON: {data_str}")
+            
+            # 整个翻译完成后，发送一次结束消息
+            yield f"data: {json.dumps({'type': 'end', 'text': final_translation})}\n\n"
+            
+            # 翻译完成后一次性保存到数据库
+            print(f"翻译完成，正在一次性保存到数据库，文本长度: {len(final_translation)}")
+            print(f"翻译源语言: {source_lang}, 目标语言: {target_lang}")
+            print(f"原文前30字符: {text[:30]}...")
+            print(f"译文前30字符: {final_translation[:30]}...")
+            
+            # 使用独立线程保存，避免阻塞响应
+            def save_task():
+                try:
+                    # 使用之前获取的IP地址，而不是从request中获取
+                    result = save_to_database(text, final_translation, source_lang, target_lang, client_ip)
+                    if result:
+                        print(f"✅ 翻译结果已成功保存到数据库！")
+                    else:
+                        print(f"❌ 数据库保存失败，但不影响翻译结果")
+                except Exception as e:
+                    print(f"❌ 保存到数据库时出现异常: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # 启动保存线程
+            save_thread = threading.Thread(target=save_task)
+            save_thread.daemon = True  # 设置为守护线程，不阻止主程序退出
+            save_thread.start()
+            print(f"数据库保存线程已启动 (ID: {save_thread.ident})")
+        
+        # 使用缓冲生成器创建流式响应
+        return app.response_class(
+            buffered_streaming_generator(),
+            mimetype='text/event-stream'
+        )
+        
+    except Exception as e:
+        print(f"流式翻译过程中出错: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 # 确保调试信息直接输出到控制台
 if __name__ == '__main__':

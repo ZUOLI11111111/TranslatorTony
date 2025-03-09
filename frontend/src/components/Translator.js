@@ -9,6 +9,7 @@ function Translator({ languages, apiBaseUrl, onViewHistory }) {
   const [isTranslating, setIsTranslating] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  const [useStreaming, setUseStreaming] = useState(true);
 
   const handleTranslate = async () => {
     if (!sourceText.trim()) {
@@ -21,33 +22,17 @@ function Translator({ languages, apiBaseUrl, onViewHistory }) {
       setError(null);
       setSuccess(null);
       
-      console.log(`发送翻译请求到: ${apiBaseUrl}/api/translate`);
-      console.log(`从 ${sourceLang} 翻译到 ${targetLang}: ${sourceText.substring(0, 30)}...`);
-
-      const response = await axios.post(`${apiBaseUrl}/api/translate`, {
-        text: sourceText,
-        source_lang: sourceLang,
-        target_lang: targetLang
-      }, {
-        timeout: 300000 // 300秒（5分钟）超时，与后端一致
-      });
-
-      console.log('翻译完成');
-      setTranslatedText(response.data.translated_text);
-      setSuccess('翻译成功！');
-      
-      // 3秒后清除成功消息
-      setTimeout(() => {
-        setSuccess(null);
-      }, 3000);
+      if (useStreaming) {
+        await handleStreamingTranslate();
+      } else {
+        await handleRegularTranslate();
+      }
     } catch (err) {
       console.error('翻译错误:', err);
       if (err.response) {
-        // 服务器返回了错误响应
         const errorMsg = err.response.data.error || '翻译服务出错';
         setError(errorMsg);
       } else if (err.request) {
-        // 请求发送了但是没有收到响应
         setError(
           <div>
             <p>服务器无响应或请求超时</p>
@@ -55,11 +40,98 @@ function Translator({ languages, apiBaseUrl, onViewHistory }) {
           </div>
         );
       } else {
-        // 请求设置本身出了问题
         setError('请求错误: ' + err.message);
       }
     } finally {
       setIsTranslating(false);
+    }
+  };
+
+  const handleRegularTranslate = async () => {
+    console.log(`发送翻译请求到: ${apiBaseUrl}/api/translate`);
+    console.log(`从 ${sourceLang} 翻译到 ${targetLang}: ${sourceText.substring(0, 30)}...`);
+
+    const response = await axios.post(`${apiBaseUrl}/api/translate`, {
+      text: sourceText,
+      source_lang: sourceLang,
+      target_lang: targetLang
+    }, {
+      timeout: 300000
+    });
+
+    console.log('翻译完成');
+    setTranslatedText(response.data.translated_text);
+    setSuccess('翻译成功！');
+    
+    setTimeout(() => {
+      setSuccess(null);
+    }, 3000);
+  };
+
+  const handleStreamingTranslate = async () => {
+    console.log(`发送流式翻译请求到: ${apiBaseUrl}/api/translate/stream`);
+    console.log(`从 ${sourceLang} 翻译到 ${targetLang}: ${sourceText.substring(0, 30)}...`);
+    
+    setTranslatedText('');
+    
+    try {
+      const url = new URL(`${apiBaseUrl}/api/translate/stream`);
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text: sourceText,
+          source_lang: sourceLang,
+          target_lang: targetLang
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '流式翻译请求失败');
+      }
+      
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let translationCompleted = false;
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const text = decoder.decode(value, { stream: true });
+        
+        const lines = text.split('\n\n');
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.substring(6));
+              
+              if (data.type === 'update') {
+                setTranslatedText(data.text);
+              } else if (data.type === 'end') {
+                if (!translationCompleted) {
+                  translationCompleted = true;
+                  setSuccess('翻译成功！');
+                  setTimeout(() => {
+                    setSuccess(null);
+                  }, 3000);
+                }
+              } else if (data.type === 'error') {
+                setError(data.message || '翻译过程中出错');
+              }
+            } catch (err) {
+              console.error('解析流数据失败:', err, line);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('流式翻译错误:', err);
+      throw err;
     }
   };
 
@@ -71,28 +143,24 @@ function Translator({ languages, apiBaseUrl, onViewHistory }) {
   };
 
   const handleSwapLanguages = () => {
-    // 不交换自动检测语言
     if (sourceLang === 'auto') return;
     
     const temp = sourceLang;
     setSourceLang(targetLang);
     setTargetLang(temp);
     
-    // 如果已经有翻译结果，也交换文本
     if (translatedText) {
       setSourceText(translatedText);
       setTranslatedText(sourceText);
     }
   };
 
-  // 处理按Enter键翻译
   const handleKeyDown = (e) => {
     if (e.ctrlKey && e.key === 'Enter') {
       handleTranslate();
     }
   };
 
-  // 查看翻译历史记录
   const handleViewHistory = () => {
     if (typeof onViewHistory === 'function') {
       onViewHistory();
@@ -183,6 +251,14 @@ function Translator({ languages, apiBaseUrl, onViewHistory }) {
         <button className="history-button" onClick={handleViewHistory}>
           查看历史记录
         </button>
+        <label className="stream-toggle">
+          <input
+            type="checkbox"
+            checked={useStreaming}
+            onChange={(e) => setUseStreaming(e.target.checked)}
+          />
+          实时翻译
+        </label>
       </div>
       
       {error && (

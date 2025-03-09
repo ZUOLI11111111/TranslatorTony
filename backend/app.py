@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, stream_with_context, Response
 from flask_cors import CORS
 import requests
 import config
@@ -6,6 +6,7 @@ import os
 import json
 import time
 from dotenv import load_dotenv
+import threading
 
 app = Flask(__name__)
 # 配置JSON响应不转义中文字符
@@ -88,37 +89,59 @@ def call_deepseek_api(messages, model="deepseek-chat"):
         
     except requests.exceptions.Timeout as e:
         print(f"API请求超时: {str(e)}")
-        raise ValueError(f"API请求超时。详细错误: {str(e)}")
+        raise
     except requests.exceptions.HTTPError as e:
-        print(f"API HTTP错误: {str(e)}")
-        if hasattr(e, 'response') and e.response is not None:
-            status_code = e.response.status_code
-            if status_code == 404:
-                raise ValueError(f"API端点未找到(404)。请检查API URL是否正确: {DEEPSEEK_API_URL}/v1/chat/completions")
-            elif status_code == 401:
-                raise ValueError("API密钥无效或已过期(401)")
-            else:
-                raise ValueError(f"API HTTP错误({status_code}): {str(e)}")
-        else:
-            raise ValueError(f"API HTTP错误: {str(e)}")
-    except requests.exceptions.RequestException as e:
-        print(f"API请求失败: {str(e)}")
-        if hasattr(e, 'response') and e.response:
-            print(f"响应状态码: {e.response.status_code}")
-            print(f"响应内容: {e.response.text}")
+        print(f"API请求HTTP错误: {str(e)}")
+        # 尝试获取更详细的错误信息
+        try:
+            error_data = e.response.json()
+            print(f"错误详情: {error_data}")
+        except:
+            pass
+        raise
+    except Exception as e:
+        print(f"API请求错误: {str(e)}")
+        raise
+
+def call_deepseek_api_streaming(messages, model="deepseek-chat"):
+    """调用DeepSeek API的流式版本，使用流式模式"""
+    try:
+        print(f"调用DeepSeek API（流式模式），模型: {model}")
+        print(f"API基础URL: {DEEPSEEK_API_URL}")
+        
+        # 检查API密钥
+        if not DEEPSEEK_API_KEY:
+            raise ValueError("未配置DeepSeek API密钥")
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
+        }
+        
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.3,
+            "max_tokens": 8192,
+            "stream": True  # 启用流式响应
+        }
+        
+        print(f"发送流式请求到DeepSeek API，模型: {model}")
+        response = requests.post(
+            f"{DEEPSEEK_API_URL}/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=300,  # 增加超时时间到5分钟
+            stream=True   # 启用流式响应
+        )
+        
+        # 检查请求是否成功
+        response.raise_for_status()
+        return response
         
     except Exception as e:
-        print(f"处理API请求时出错: {str(e)}")
-        # 处理其他异常
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "content": f"[错误] 调用API时出现问题: {str(e)}"
-                    }
-                }
-            ]
-        }
+        print(f"流式API请求错误: {str(e)}")
+        raise
 
 @app.route('/api/translate', methods=['POST'])
 def translate():
@@ -159,7 +182,7 @@ def translate():
         
         
         
-        # 调用DeepSeek API
+        # 调用deepseek API
         messages = [
             {"role": "system", "content": "你是一个专业翻译助手，能够准确流畅地进行多语言翻译。"},
             {"role": "user", "content": prompt}
@@ -300,6 +323,116 @@ def save_to_database(original_text, translated_text, source_lang, target_lang, i
         print(f"连接Java后端失败: {str(e)}")
         # 这里我们只记录错误，不阻止主要功能
         return False
+
+@app.route('/api/translate/stream', methods=['POST'])
+def translate_stream():
+    """
+    流式翻译API端点
+    请求JSON格式:
+    {
+        "text": "要翻译的文本",
+        "source_lang": "源语言代码(可选)",
+        "target_lang": "目标语言代码"
+    }
+    """
+    print("收到流式翻译请求")
+    if not DEEPSEEK_API_KEY:
+        return jsonify({"error": "未配置API密钥"}), 500
+        
+    try:
+        data = request.json
+        print(f"流式翻译请求数据: {data}")
+        
+        if not data:
+            return jsonify({"error": "未收到有效的JSON数据"}), 400
+            
+        text = data.get('text', '')
+        source_lang = data.get('source_lang', config.DEFAULT_SOURCE_LANG)
+        target_lang = data.get('target_lang', config.DEFAULT_TARGET_LANG)
+        
+        if not text:
+            return jsonify({"error": "文本不能为空"}), 400
+            
+        # 准备翻译提示
+        if source_lang == 'auto':
+            prompt = f"将以下文本翻译成{target_lang}语言:\n\n{text}"
+        else:
+            prompt = f"将以下{source_lang}文本翻译成学生写的实验报告且机器味道不浓的{target_lang}语言:\n\n{text}"
+        
+        print(f"流式翻译提示: {prompt[:50]}...")
+        
+        # 调用DeepSeek API (流式模式)
+        messages = [
+            {"role": "system", "content": "你是一个专业翻译助手，能够准确流畅地进行多语言翻译。"},
+            {"role": "user", "content": prompt}
+        ]
+        
+        model = os.getenv('DEEPSEEK_MODEL', 'deepseek-chat')
+        
+        def generate():
+            # 首先发送一个初始化事件，让前端知道连接已建立
+            yield f"data: {json.dumps({'type': 'start', 'source_lang': source_lang, 'target_lang': target_lang})}\n\n"
+            
+            try:
+                # 调用流式API
+                api_response = call_deepseek_api_streaming(messages, model)
+                
+                # 流式处理响应
+                partial_message = ""
+                for line in api_response.iter_lines():
+                    if line:
+                        line = line.decode('utf-8')
+                        if line.startswith('data: '):
+                            data_str = line[6:]  # 去掉 "data: " 前缀
+                            if data_str != '[DONE]':
+                                try:
+                                    data_json = json.loads(data_str)
+                                    if 'choices' in data_json:
+                                        delta = data_json['choices'][0].get('delta', {})
+                                        if 'content' in delta:
+                                            content = delta['content']
+                                            partial_message += content
+                                            # 发送当前的增量内容和累积的内容
+                                            response_data = {
+                                                'type': 'update',
+                                                'delta': content,
+                                                'text': partial_message
+                                            }
+                                            yield f"data: {json.dumps(response_data)}\n\n"
+                                except json.JSONDecodeError:
+                                    print(f"无法解析JSON: {data_str}")
+                
+                # 翻译完成后发送完成事件
+                yield f"data: {json.dumps({'type': 'end', 'text': partial_message})}\n\n"
+                
+                # 保存翻译结果到数据库（异步，不影响响应）
+                try:
+                    threading.Thread(
+                        target=save_to_database,
+                        args=(text, partial_message, source_lang, target_lang, request.remote_addr)
+                    ).start()
+                except Exception as e:
+                    print(f"异步保存到数据库失败: {str(e)}")
+                    
+            except Exception as e:
+                print(f"流式翻译过程中出错: {str(e)}")
+                error_data = {'type': 'error', 'message': str(e)}
+                yield f"data: {json.dumps(error_data)}\n\n"
+        
+        # 返回流式响应
+        return Response(
+            stream_with_context(generate()),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no',  # 防止Nginx缓冲
+                'Connection': 'keep-alive'
+            }
+        )
+        
+    except Exception as e:
+        print(f"流式翻译错误: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 # 确保调试信息直接输出到控制台
 if __name__ == '__main__':

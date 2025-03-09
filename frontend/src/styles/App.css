@@ -44,4 +44,27 @@
 .header p {
   color: #6c757d;
   margin-top: 0;
+}
+
+/* 实时翻译切换开关样式 */
+.stream-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.9rem;
+  color: #555;
+  cursor: pointer;
+}
+
+.stream-toggle input {
+  margin: 0;
+}
+
+/* 修改控制按钮区域样式以容纳新控件 */
+.controls {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+  flex-wrap: wrap;
+  align-items: center;
 } 

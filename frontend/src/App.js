@@ -68,7 +68,7 @@ function App() {
             <p>无法连接到后端服务 ({API_BASE_URL})</p>
             <p>错误: {innerErr.message}</p>
             <p>请确保后端服务已启动，并且端口5000可访问</p>
-            <p><strong>提示:</strong> 请在后端目录运行: <code>python3 app.py</code></p>
+            <p><strong>提示:</strong> 请在后端目录运行: <code>python3 app_llm.py</code></p>
           </div>
         );
         setIsApiConfigured(false);
